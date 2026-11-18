@@ -8,6 +8,8 @@
 
 Mỗi mã dưới đây có số lần xuất hiện tương ứng trong [danh sách lỗi vòng 1](reports/02_error_list_v1.csv). Một ảnh hoặc một dòng nhãn có thể có nhiều mã.
 
+Cửa vào kiểm tra 224 ảnh. Sau khi loại 19 ảnh, các check theo ảnh chạy trên 205 ảnh còn lại. Trong số đó, 199 ảnh có file nhãn, với tổng cộng 675 dòng nhãn không trống trước autofix. Check tên lớp và thống kê lớp đối chiếu 4 lớp trong cấu hình.
+
 | Mã lỗi | Số lần theo thứ tự mã | Xử lý |
 |---|---|---|
 | CORRUPT_IMAGE, BAD_SIZE | 2, 3 ảnh | Máy loại ảnh hỏng hoặc dưới kích thước tối thiểu. |
@@ -63,15 +65,28 @@ Chênh lệch trung bình 0,025 nhỏ hơn độ lệch chuẩn giữa hai seed 
 **Cách dùng AI**
 
 - **Prompt chính.** Đầu vào gồm nhãn YOLO `id cx cy w h`, ảnh, `data.yaml` và dự đoán YOLO26l đã lưu. Yêu cầu AI viết bốn module để kiểm nhãn, đối chiếu dự đoán, sửa lỗi theo quy tắc và áp dụng điều kiện của gate. Đầu ra gồm danh sách lỗi và cảnh báo, log thay đổi và quyết định của gate. Giới hạn thao tác sửa, xóa trong bản sao làm việc.
-- **Cách kiểm.** Rà các lệnh ghi và xóa. `autofix` có thể xóa ảnh kèm nhãn và ghi đè file nhãn hoặc `data.yaml` trong bản sao làm việc. Chạy pytest (79/79 test đạt), chạy pipeline trên bản sao và đối chiếu tập calib (17/17 ca lỗi theo quy tắc được phát hiện).
+- **Cách kiểm.** Rà các lệnh ghi và xóa. `autofix` có thể xóa ảnh kèm nhãn và ghi đè file nhãn hoặc `data.yaml` trong bản sao làm việc. Chạy pytest (81/81 test đạt, gồm hai test cho check tỷ lệ cạnh box), chạy pipeline trên bản sao và đối chiếu tập calib (17/17 ca lỗi theo quy tắc được phát hiện).
 - **Lỗi AI mắc.** Bản đầu của `label_format.run` thiếu `return issues`, nên test nhận `None`. Sau khi thêm dòng trả kết quả, 14/14 test của module đạt.
 
 ### Check bổ sung: tỷ lệ cạnh box
 
 Chạy `python -m pipeline.checks.aspect_ratio` trên `work/run/ds`. Check đổi chiều rộng và chiều cao từ YOLO sang pixel rồi cảnh báo `BOX_EXTREME_ASPECT` khi cạnh dài lớn hơn 12 lần cạnh ngắn. Kết quả trên 205 ảnh sau duyệt là 0 cảnh báo ở ngưỡng này. Hai test kiểm cách đổi sang pixel, biên ngưỡng và xử lý dòng hỏng đều đạt, trong đó có một box chèn sẵn với tỷ lệ 50:1 được phát hiện. CSV được ghi riêng ở `work/aspect_ratio.csv`.
 
-### Đối chiếu CVAT
+### Đối chiếu bộ lọc CVAT
 
-Đã chuẩn bị hai gói import cho 5 ảnh từ hàng đợi duyệt. Tính theo nhãn YOLO và kích thước ảnh, bộ lọc `width < 20` dự kiến khớp 10 box. Số box theo ảnh là `img_0020` (3), `img_0053` (1), `img_0135` (2), `img_0030` (3) và `img_0124` (1). Khi chạy lại check trên cùng nhãn, cả năm ảnh đều không có `BOX_TINY`. Check này dùng cạnh ngắn dưới 12 px, còn bộ lọc CVAT chỉ xét chiều rộng dưới 20 px. Người gán có thể bật `can_review` khi muốn nhờ người khác xem một box khó. Trong pipeline, mã cảnh báo và điểm ưu tiên trong `05_review_queue.csv` giúp đưa các ảnh cần xem lên trước.
+Áp dụng bộ lọc `Width < 20` trên 5 ảnh sau duyệt trong CVAT Job #19. Số box hiển thị trong mục Objects khớp với phép tính từ nhãn YOLO trên cả 5 ảnh. Chiều rộng được tính bằng chiều rộng chuẩn hóa trong nhãn YOLO nhân với chiều rộng ảnh gốc, rồi so sánh với 20 px trước khi làm tròn. Đối chiếu các tệp nhãn dùng để mô phỏng với bản xuất `clean_v1` và chạy lại check `BOX_TINY` trên cùng dữ liệu. Kết quả khớp 10/44 box, có chiều rộng từ 15,01 đến 19,29 px.
 
-Trạng thái CVAT: còn chờ xác nhận bộ lọc trong giao diện và ảnh chụp.
+| Ảnh | Box CVAT hiển thị sau lọc | Cảnh báo `BOX_TINY` |
+|---|---:|---:|
+| `img_0020` | 3 | 0 |
+| `img_0053` | 1 | 0 |
+| `img_0135` | 2 | 0 |
+| `img_0030` | 3 | 0 |
+| `img_0124` | 1 | 0 |
+| **Tổng** | **10** | **0** |
+
+Bộ lọc CVAT xét chiều rộng dưới 20 px. Pipeline gắn cờ `BOX_TINY` khi cạnh ngắn dưới 12 px. Khi chạy lại check trên cùng bộ nhãn, cả 5 ảnh đều có 0 cờ `BOX_TINY`.
+
+Người gán bật `can_review` để đánh dấu box cần người khác xem lại. Pipeline dùng mã cảnh báo và điểm ưu tiên trong `05_review_queue.csv` để đưa ảnh cần xem lên trước.
+
+Task #19 dùng nhãn nhập theo định dạng YOLO 1.1. Ảnh kết quả minh họa 3 box được CVAT hiển thị trên `img_0020` sau khi áp dụng bộ lọc. [Cấu hình bộ lọc](cvat_bonus/width-filter-rule.png) · [Kết quả lọc trên img_0020](cvat_bonus/width-filter-results.jpg)
