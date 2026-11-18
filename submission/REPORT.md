@@ -65,3 +65,13 @@ Chênh lệch trung bình 0,025 nhỏ hơn độ lệch chuẩn giữa hai seed 
 - **Prompt chính.** Đầu vào gồm nhãn YOLO `id cx cy w h`, ảnh, `data.yaml` và dự đoán YOLO26l đã lưu. Yêu cầu AI viết bốn module để kiểm nhãn, đối chiếu dự đoán, sửa lỗi theo quy tắc và áp dụng điều kiện của gate. Đầu ra gồm danh sách lỗi và cảnh báo, log thay đổi và quyết định của gate. Giới hạn thao tác sửa, xóa trong bản sao làm việc.
 - **Cách kiểm.** Rà các lệnh ghi và xóa. `autofix` có thể xóa ảnh kèm nhãn và ghi đè file nhãn hoặc `data.yaml` trong bản sao làm việc. Chạy pytest (79/79 test đạt), chạy pipeline trên bản sao và đối chiếu tập calib (17/17 ca lỗi theo quy tắc được phát hiện).
 - **Lỗi AI mắc.** Bản đầu của `label_format.run` thiếu `return issues`, nên test nhận `None`. Sau khi thêm dòng trả kết quả, 14/14 test của module đạt.
+
+### Check bổ sung: tỷ lệ cạnh box
+
+Chạy `python -m pipeline.checks.aspect_ratio` trên `work/run/ds`. Check đổi chiều rộng và chiều cao từ YOLO sang pixel rồi cảnh báo `BOX_EXTREME_ASPECT` khi cạnh dài lớn hơn 12 lần cạnh ngắn. Kết quả trên 205 ảnh sau duyệt là 0 cảnh báo ở ngưỡng này. Hai test kiểm cách đổi sang pixel, biên ngưỡng và xử lý dòng hỏng đều đạt, trong đó có một box chèn sẵn với tỷ lệ 50:1 được phát hiện. CSV được ghi riêng ở `work/aspect_ratio.csv`.
+
+### Đối chiếu CVAT
+
+Đã chuẩn bị hai gói import cho 5 ảnh từ hàng đợi duyệt. Tính theo nhãn YOLO và kích thước ảnh, bộ lọc `width < 20` dự kiến khớp 10 box. Số box theo ảnh là `img_0020` (3), `img_0053` (1), `img_0135` (2), `img_0030` (3) và `img_0124` (1). Khi chạy lại check trên cùng nhãn, cả năm ảnh đều không có `BOX_TINY`. Check này dùng cạnh ngắn dưới 12 px, còn bộ lọc CVAT chỉ xét chiều rộng dưới 20 px. Người gán có thể bật `can_review` khi muốn nhờ người khác xem một box khó. Trong pipeline, mã cảnh báo và điểm ưu tiên trong `05_review_queue.csv` giúp đưa các ảnh cần xem lên trước.
+
+Trạng thái CVAT: còn chờ xác nhận bộ lọc trong giao diện và ảnh chụp.
