@@ -27,13 +27,97 @@ Bẫy cần nghĩ tới (có test cho từng cái)
 
 Gợi ý: `yaml.safe_load / safe_dump`.
 """
-from collections import defaultdict  # noqa: F401
+from collections import defaultdict
 
-import yaml  # noqa: F401
+import yaml
 
-from ..common import ERROR, parse_yolo_line  # noqa: F401
+from ..common import ERROR, parse_yolo_line
+
+
+DROP_CODES = {"BAD_FORMAT", "BAD_CLASS_ID", "BOX_ZERO", "DUP_BOX"}
+REMOVE_CODES = {"DUP_IMAGE_EXACT", "DUP_IMAGE_NEAR", "LEAK_TEST", "CORRUPT_IMAGE", "BAD_SIZE"}
+
+
+def _clip_box(text):
+    cls, x, y, w, h = parse_yolo_line(text)
+    left, top = x - w / 2, y - h / 2
+    right, bottom = x + w / 2, y + h / 2
+    if 0 <= left < right <= 1 and 0 <= top < bottom <= 1:
+        return text
+
+    left, top = max(left, 0), max(top, 0)
+    right, bottom = min(right, 1), min(bottom, 1)
+    if left >= right or top >= bottom:
+        return None
+    box = ((left + right) / 2, (top + bottom) / 2, right - left, bottom - top)
+    return f"{cls} " + " ".join(str(value) for value in box)
 
 
 def fix(ds, issues, cfg):
-    # TODO
-    raise NotImplementedError("autofix chưa làm")
+    errors = [issue for issue in issues if issue.severity == ERROR]
+    fixes = []
+
+    def record(image, line, action, before, after):
+        fixes.append(dict(image=image, line=line, action=action, before=before, after=after))
+
+    removed = {issue.image for issue in errors if issue.code in REMOVE_CODES}
+    for stem in sorted(removed):
+        image = ds.image_path(stem)
+        label = ds.label_path(stem)
+        if image is not None:
+            image.unlink(missing_ok=True)
+        if image is not None or label.exists():
+            label.unlink(missing_ok=True)
+            record(stem, None, "remove_image", image.name if image else label.name, "")
+
+    if any(issue.code == "BAD_CLASS_NAME" for issue in errors):
+        data = yaml.safe_load(ds.yaml_path.read_text(encoding="utf-8")) if ds.yaml_path.exists() else {}
+        data = data or {}
+        if ds.yaml_names() != dict(enumerate(cfg["classes"])):
+            before = data.get("names")
+            data["names"] = list(cfg["classes"])
+            ds.yaml_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+            record("data.yaml", None, "rename_classes", str(before), str(data["names"]))
+
+    line_errors = defaultdict(dict)
+    missing = set()
+    for issue in errors:
+        if issue.image in removed:
+            continue
+        if issue.code == "MISSING_LABEL_FILE":
+            missing.add(issue.image)
+        elif issue.line is not None:
+            if issue.code in DROP_CODES:
+                line_errors[issue.image][issue.line] = "drop_line"
+            elif issue.code == "BOX_OUT_OF_IMAGE":
+                line_errors[issue.image].setdefault(issue.line, "clip_box")
+
+    for stem in sorted(missing):
+        if ds.image_path(stem) is not None and not ds.label_path(stem).exists():
+            record(stem, None, "needs_label", "(không có file)", "chuyển người gán")
+
+    for stem, actions in sorted(line_errors.items()):
+        path = ds.label_path(stem)
+        if not path.exists():
+            continue
+        original = path.read_bytes().decode("utf-8", errors="replace")
+        updated = []
+        for number, raw in enumerate(original.splitlines(keepends=True), 1):
+            action = actions.get(number)
+            if action is None or not raw.strip():
+                updated.append(raw)
+                continue
+            before = raw.rstrip("\r\n")
+            after = _clip_box(before) if action == "clip_box" else None
+            if after is None:
+                record(stem, number, "drop_line", before, "")
+            elif after != before:
+                updated.append(after + raw[len(before):])
+                record(stem, number, "clip_box", before, after)
+            else:
+                updated.append(raw)
+        result = "".join(updated)
+        if result != original:
+            path.write_bytes(result.encode("utf-8"))
+
+    return fixes

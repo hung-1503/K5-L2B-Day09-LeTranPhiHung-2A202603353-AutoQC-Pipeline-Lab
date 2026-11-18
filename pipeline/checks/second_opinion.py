@@ -35,10 +35,67 @@ Gợi ý
 - `iou_xywh` có sẵn. Dòng nhãn hỏng không được làm script chết (dùng `ds.valid_boxes` và `parse_yolo_line` trong try).
 - Kết quả phụ thuộc mạnh vào ngưỡng: calibrate chúng ở Bước 3 thay vì đoán.
 """
-from ..common import WARN, Issue, iou_xywh, parse_yolo_line  # noqa: F401
-from ..model_cache import get_preds  # noqa: F401
+from ..common import WARN, Issue, iou_xywh, parse_yolo_line
+from ..model_cache import get_preds
+
+
+def _numbered_boxes(lines, class_count):
+    for line, text in lines:
+        try:
+            cls, *box = parse_yolo_line(text)
+        except (ValueError, OverflowError):
+            continue
+        if 0 <= cls < class_count and box[2] > 0 and box[3] > 0:
+            yield line, cls, box
 
 
 def run(ds, cfg, preds=None):
-    # TODO
-    raise NotImplementedError("check second_opinion chưa làm")
+    if preds is None:
+        preds = get_preds(ds, cfg, "checker")
+    limits = cfg["second_opinion"]
+    iou_missing = limits["iou_missing"]
+    issues = []
+    for path in ds.image_files():
+        stem = path.stem
+        if stem not in preds:
+            continue
+        lines = ds.read_label_lines(stem)
+        if lines is None:
+            continue
+        size = ds.image_size(stem)
+        if size is None:
+            continue
+        width, height = size
+        labels = list(_numbered_boxes(lines, len(ds.classes)))
+        model_boxes = preds[stem]
+
+        for cls, conf, *box in model_boxes:
+            if conf < limits["conf"] or box[2] * width * box[3] * height < limits["min_area_px"]:
+                continue
+            overlaps = [(label_cls, iou_xywh(box, label_box)) for _, label_cls, label_box in labels]
+            candidates = [(label_cls, iou) for label_cls, iou in overlaps if iou >= iou_missing]
+            if not candidates:
+                issues.append(Issue("second_opinion", WARN, "POSSIBLE_MISSING", stem,
+                                    f"model thấy lớp {cls} nhưng thiếu box khớp", extra={"conf": conf}))
+                continue
+
+            same_class = max((iou for label_cls, iou in candidates if label_cls == cls), default=None)
+            if same_class is not None:
+                if same_class < limits["iou_loose"]:
+                    issues.append(Issue("second_opinion", WARN, "POSSIBLE_LOOSE_BOX", stem,
+                                        f"box lớp {cls} có IoU {same_class:.2f}",
+                                        extra={"conf": conf, "iou": same_class}))
+                continue
+
+            label_cls, best_iou = max(candidates, key=lambda candidate: candidate[1])
+            if best_iou >= limits["iou_match"]:
+                issues.append(Issue("second_opinion", WARN, "POSSIBLE_WRONG_CLASS", stem,
+                                    f"nhãn lớp {label_cls}, model dự đoán lớp {cls}",
+                                    extra={"conf": conf, "iou": best_iou}))
+
+        reference_boxes = [box for _, conf, *box in model_boxes if conf >= limits["fp_conf"]]
+        for line, cls, box in labels:
+            if not any(iou_xywh(box, ref) >= iou_missing for ref in reference_boxes):
+                issues.append(Issue("second_opinion", WARN, "POSSIBLE_FALSE_POS", stem,
+                                    f"model không thấy box khớp với nhãn lớp {cls}", line))
+    return issues
